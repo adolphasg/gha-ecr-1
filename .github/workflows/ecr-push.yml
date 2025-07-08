@@ -1,0 +1,75 @@
+name: Build and push to ECR & DockerHub
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      ECR_REPOSITORY: test-ecr-repo
+      DOCKERHUB_REPO: ${{ secrets.DOCKER_HUB_USERNAME }}/test-ecr-repo
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set dynamic image tag
+        id: set-tag
+        run: |
+          DATE_TAG="gold-$(date +'%Y%m%d-%H%M%S')"
+          echo "TAG=$DATE_TAG" >> $GITHUB_ENV
+          echo "::notice::Using image tag: $DATE_TAG"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create ECR repo if it doesn't exist
+        run: |
+          aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION || \
+          aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t $ECR_REPOSITORY:$TAG .
+
+      -  name: Tag image for ECR and DockerHub
+         run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_URI="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$TAG"
+          DOCKERHUB_URI="$DOCKERHUB_REPO:$TAG"
+          docker tag $ECR_REPOSITORY:$TAG $ECR_URI
+          docker tag $ECR_REPOSITORY:$TAG $DOCKERHUB_URI
+          echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
+          echo "DOCKERHUB_URI=$DOCKERHUB_URI" >> $GITHUB_ENV
+
+      - name: Push to ECR
+        run: docker push $ECR_URI
+
+      - name: Push to DockerHub
+        run: docker push $DOCKERHUB_URI 
+
+      - name: Output Summary
+        run: |
+          echo "::group::Published Image Info"
+          echo "ECR Image:      $ECR_URI"
+          echo "DockerHub Image: $DOCKERHUB_URI"
+          echo "Image Tag:      $TAG"
+          echo "::endgroup::"
